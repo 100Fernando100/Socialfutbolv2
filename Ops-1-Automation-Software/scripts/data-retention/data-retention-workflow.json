@@ -1,0 +1,342 @@
+{
+  "name": "Ops-1 Data Retention - Nightly Cleanup",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 24
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Daily Schedule (2 AM)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Find expired configurations\nSELECT \n  config_id,\n  client_id,\n  version,\n  pinecone_namespace,\n  retention_expiry\nFROM client_configurations\nWHERE \n  retention_expiry < NOW()\n  AND status = 'active';",
+        "options": {}
+      },
+      "id": "find-expired-configs",
+      "name": "Find Expired Configurations",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [220, 300],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "Ops1 PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-expired",
+              "leftValue": "={{ $json.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "has-expired-check",
+      "name": "Has Expired Data?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Log that no expired data was found\nconsole.log('No expired configurations found.');\nreturn { json: { message: 'No expired data to process', timestamp: new Date().toISOString() } };"
+      },
+      "id": "no-expired-data",
+      "name": "No Expired Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 180]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem"
+      },
+      "id": "split-items",
+      "name": "Process Each Expired Config",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [660, 420]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://{{ $env.PINECONE_HOST }}/vectors/delete",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"deleteAll\": true,\n  \"namespace\": \"{{ $json.pinecone_namespace }}\"\n}",
+        "options": {}
+      },
+      "id": "delete-pinecone-namespace",
+      "name": "Delete Pinecone Namespace",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, 420],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "PINECONE_CREDENTIAL_ID",
+          "name": "Pinecone API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Mark configuration as expired\nUPDATE client_configurations\nSET status = 'expired'\nWHERE config_id = '{{ $('Process Each Expired Config').item.json.config_id }}';",
+        "options": {}
+      },
+      "id": "mark-config-expired",
+      "name": "Mark Config Expired",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1100, 420],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "Ops1 PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Log the data retention action\nINSERT INTO access_log (\n  client_id,\n  action_type,\n  namespace_accessed,\n  status,\n  metadata\n) VALUES (\n  '{{ $('Process Each Expired Config').item.json.client_id }}',\n  'data_retention_purge',\n  '{{ $('Process Each Expired Config').item.json.pinecone_namespace }}',\n  'success',\n  '{\"action\": \"retention_expiry_purge\", \"config_version\": \"{{ $('Process Each Expired Config').item.json.version }}\"}'::jsonb\n);",
+        "options": {}
+      },
+      "id": "log-retention-action",
+      "name": "Log Retention Action",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1320, 420],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "Ops1 PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Purge old audit receipts (keep for 2 years)\nDELETE FROM audit_receipts\nWHERE timestamp < NOW() - INTERVAL '2 years'\nRETURNING receipt_id;",
+        "options": {}
+      },
+      "id": "purge-old-receipts",
+      "name": "Purge Old Audit Receipts",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1540, 300],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "Ops1 PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Purge old access logs (keep for 1 year)\nDELETE FROM access_log\nWHERE timestamp < NOW() - INTERVAL '1 year'\nRETURNING log_id;",
+        "options": {}
+      },
+      "id": "purge-old-logs",
+      "name": "Purge Old Access Logs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1760, 300],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "Ops1 PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate summary report\nconst expiredConfigs = $('Find Expired Configurations').first().json || [];\nconst purgedReceipts = $('Purge Old Audit Receipts').first().json || [];\nconst purgedLogs = $('Purge Old Access Logs').first().json || [];\n\nconst summary = {\n  timestamp: new Date().toISOString(),\n  job: 'data_retention_cleanup',\n  status: 'completed',\n  results: {\n    expired_configurations_processed: Array.isArray(expiredConfigs) ? expiredConfigs.length : 0,\n    audit_receipts_purged: Array.isArray(purgedReceipts) ? purgedReceipts.length : 0,\n    access_logs_purged: Array.isArray(purgedLogs) ? purgedLogs.length : 0\n  }\n};\n\nconsole.log('Data retention cleanup completed:', JSON.stringify(summary, null, 2));\n\nreturn { json: summary };"
+      },
+      "id": "generate-summary",
+      "name": "Generate Summary Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1980, 300]
+    }
+  ],
+  "connections": {
+    "Daily Schedule (2 AM)": {
+      "main": [
+        [
+          {
+            "node": "Find Expired Configurations",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Expired Configurations": {
+      "main": [
+        [
+          {
+            "node": "Has Expired Data?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Expired Data?": {
+      "main": [
+        [
+          {
+            "node": "No Expired Data",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Process Each Expired Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "No Expired Data": {
+      "main": [
+        [
+          {
+            "node": "Purge Old Audit Receipts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Each Expired Config": {
+      "main": [
+        [
+          {
+            "node": "Delete Pinecone Namespace",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete Pinecone Namespace": {
+      "main": [
+        [
+          {
+            "node": "Mark Config Expired",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Config Expired": {
+      "main": [
+        [
+          {
+            "node": "Log Retention Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Retention Action": {
+      "main": [
+        [
+          {
+            "node": "Process Each Expired Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Purge Old Audit Receipts": {
+      "main": [
+        [
+          {
+            "node": "Purge Old Access Logs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Purge Old Access Logs": {
+      "main": [
+        [
+          {
+            "node": "Generate Summary Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "Ops-1",
+      "createdAt": "2025-01-21T00:00:00.000Z",
+      "updatedAt": "2025-01-21T00:00:00.000Z"
+    },
+    {
+      "name": "Maintenance",
+      "createdAt": "2025-01-21T00:00:00.000Z",
+      "updatedAt": "2025-01-21T00:00:00.000Z"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2025-01-21T00:00:00.000Z",
+  "versionId": "1"
+}

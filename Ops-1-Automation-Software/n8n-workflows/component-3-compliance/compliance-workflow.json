@@ -1,0 +1,416 @@
+{
+  "name": "Ops-1 Component 3 - Compliance & Audit Module",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ops1/compliance",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "webhook-compliance",
+      "name": "Webhook - Compliance Check",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 400],
+      "webhookId": "ops1-compliance"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate incoming audit package\nconst input = $input.first().json;\n\nconst requiredFields = ['task_id', 'client_id', 'mode', 'execution'];\nfor (const field of requiredFields) {\n  if (!input[field]) {\n    throw new Error(`VALIDATION_ERROR: ${field} is required in audit package`);\n  }\n}\n\nreturn {\n  json: {\n    ...input,\n    compliance_start_time: Date.now()\n  }\n};"
+      },
+      "id": "validate-package",
+      "name": "Validate Audit Package",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"claude-3-5-haiku-latest\",\n  \"max_tokens\": 2048,\n  \"system\": \"You are the Ops-1 Compliance Verification Module. Your function is to scan software outputs before delivery to ensure they meet security and compliance standards.\\n\\nSCAN FOR AND BLOCK:\\n\\n1. PERSONALLY IDENTIFIABLE INFORMATION (PII)\\n   - Full names in unexpected contexts\\n   - Email addresses\\n   - Phone numbers\\n   - Social Insurance Numbers / SSN\\n   - Credit card numbers\\n   - Physical addresses\\n   - Dates of birth combined with other identifiers\\n\\n2. DANGEROUS SQL (if SQL mode)\\n   - Any write operations that passed pre-filter\\n   - Queries accessing unauthorized tables\\n   - Excessively broad queries (SELECT * without WHERE on large tables)\\n\\n3. CODE SAFETY (if Excel mode)\\n   - File system operations\\n   - Network requests\\n   - System calls\\n   - Import of unauthorized libraries\\n\\n4. CLIENT RULE VIOLATIONS\\n   - Output that contradicts explicit client rules\\n   - Missing required formatting\\n   - Unauthorized data exposure\\n\\nRESPONSE FORMAT:\\n\\nIf PASS:\\n{\\n  \\\"status\\\": \\\"APPROVED\\\",\\n  \\\"scan_timestamp\\\": \\\"[ISO TIMESTAMP]\\\",\\n  \\\"checks_performed\\\": [\\\"pii_scan\\\", \\\"sql_safety\\\", \\\"rule_compliance\\\"],\\n  \\\"warnings\\\": []\\n}\\n\\nIf FAIL:\\n{\\n  \\\"status\\\": \\\"BLOCKED\\\",\\n  \\\"scan_timestamp\\\": \\\"[ISO TIMESTAMP]\\\",\\n  \\\"block_reason\\\": \\\"[SPECIFIC REASON]\\\",\\n  \\\"violation_type\\\": \\\"[PII|SQL_DANGER|CODE_SAFETY|RULE_VIOLATION]\\\",\\n  \\\"evidence\\\": \\\"[QUOTE THE PROBLEMATIC CONTENT]\\\",\\n  \\\"recommendation\\\": \\\"[HOW TO FIX]\\\"\\n}\\n\\nIMPORTANT:\\n- When in doubt, BLOCK. False positives are better than security breaches.\\n- Never modify the output yourself - only approve or block.\\n- Every block must have specific evidence quoted.\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Perform compliance scan on the following output:\\n\\nMODE: {{ $json.mode }}\\nTASK: {{ $json.task_description }}\\n\\nOUTPUT TO SCAN:\\n{{ $json.execution.generated_output }}\\n\\nCLIENT RULES THAT SHOULD BE APPLIED:\\n{{ JSON.stringify($json.compliance.client_rules) }}\"\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "compliance-scan",
+      "name": "Compliance Scan (Claude)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 400],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ANTHROPIC_CREDENTIAL_ID",
+          "name": "Anthropic API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse compliance scan result\nconst response = $input.first().json;\nconst auditPackage = $('Validate Audit Package').first().json;\n\nif (!response.content || !response.content[0] || !response.content[0].text) {\n  throw new Error('AI_ERROR: Invalid response from compliance scan');\n}\n\nlet scanResult;\ntry {\n  let jsonText = response.content[0].text;\n  const jsonMatch = jsonText.match(/```(?:json)?\\s*([\\s\\S]*?)```/);\n  if (jsonMatch) {\n    jsonText = jsonMatch[1];\n  }\n  scanResult = JSON.parse(jsonText);\n} catch (e) {\n  // If parsing fails, check for APPROVED/BLOCKED keywords\n  const text = response.content[0].text.toUpperCase();\n  if (text.includes('APPROVED')) {\n    scanResult = {\n      status: 'APPROVED',\n      scan_timestamp: new Date().toISOString(),\n      checks_performed: ['pii_scan', 'code_safety', 'rule_compliance'],\n      warnings: []\n    };\n  } else {\n    scanResult = {\n      status: 'BLOCKED',\n      scan_timestamp: new Date().toISOString(),\n      block_reason: 'Failed to parse compliance response - blocking by default',\n      violation_type: 'PARSE_ERROR',\n      evidence: response.content[0].text.substring(0, 200),\n      recommendation: 'Review output manually'\n    };\n  }\n}\n\nreturn {\n  json: {\n    ...auditPackage,\n    compliance_result: scanResult,\n    passed: scanResult.status === 'APPROVED'\n  }\n};"
+      },
+      "id": "parse-compliance",
+      "name": "Parse Compliance Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "passed-check",
+              "leftValue": "={{ $json.passed }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "compliance-branch",
+      "name": "Compliance Passed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [880, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate audit receipt for approved output\nconst data = $input.first().json;\n\nconst timestamp = new Date();\nconst receiptId = `AUD-${timestamp.toISOString().split('T')[0]}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;\n\nconst auditReceipt = {\n  receipt_id: receiptId,\n  timestamp: timestamp.toISOString(),\n  client_id: data.client_id,\n  task_id: data.task_id,\n  \n  software_execution_summary: {\n    mode: data.mode,\n    task_description: data.task_description,\n    execution_duration_ms: data.execution.execution_duration_ms,\n    status: 'completed'\n  },\n  \n  configuration_compliance: {\n    rules_retrieved: data.compliance.rules_retrieved,\n    rules_applied: data.compliance.client_rules.map(r => ({\n      rule_id: r.rule_id,\n      rule_text: r.rule_text,\n      applied_to: 'Generated output',\n      evidence: `Rule referenced in ${data.mode} generation`\n    })),\n    rules_not_applicable: []\n  },\n  \n  security_audit: {\n    pii_scan: 'PASS',\n    sql_safety_scan: data.mode === 'sql' ? 'PASS' : 'N/A',\n    code_safety_scan: data.mode === 'excel' ? 'PASS' : 'N/A',\n    compliance_officer_approval: 'APPROVED'\n  },\n  \n  legal_notice: 'This output was generated by Ops-1 Automation Software, a configured software tool licensed to the client. This software is a productivity tool and does not constitute employment, agency, or professional services. All outputs should be reviewed by qualified personnel before business use.',\n  \n  result: {\n    type: data.mode === 'excel' ? 'python_code' : 'sql_query',\n    content: data.execution.generated_output\n  }\n};\n\nreturn {\n  json: {\n    ...data,\n    audit_receipt: auditReceipt\n  }\n};"
+      },
+      "id": "generate-receipt",
+      "name": "Generate Audit Receipt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO audit_receipts (\n  receipt_id,\n  client_id,\n  task_id,\n  mode,\n  task_description,\n  execution_duration_ms,\n  execution_status,\n  rules_retrieved,\n  rules_applied,\n  pii_scan_result,\n  sql_safety_result,\n  code_safety_result,\n  compliance_status,\n  full_receipt,\n  result_type\n) VALUES (\n  '{{ $json.audit_receipt.receipt_id }}',\n  '{{ $json.client_id }}',\n  '{{ $json.task_id }}',\n  '{{ $json.mode }}',\n  '{{ $json.task_description }}',\n  {{ $json.execution.execution_duration_ms }},\n  'completed',\n  {{ $json.compliance.rules_retrieved }},\n  '{{ JSON.stringify($json.audit_receipt.configuration_compliance.rules_applied) }}'::jsonb,\n  'PASS',\n  '{{ $json.mode === \"sql\" ? \"PASS\" : \"N/A\" }}',\n  '{{ $json.mode === \"excel\" ? \"PASS\" : \"N/A\" }}',\n  'APPROVED',\n  '{{ JSON.stringify($json.audit_receipt) }}'::jsonb,\n  '{{ $json.mode === \"excel\" ? \"python_code\" : \"sql_query\" }}'\n);",
+        "options": {}
+      },
+      "id": "save-receipt",
+      "name": "Save Audit Receipt",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1320, 300],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "Ops1 PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO access_log (\n  client_id,\n  task_id,\n  action_type,\n  namespace_accessed,\n  status,\n  execution_duration_ms,\n  metadata\n) VALUES (\n  '{{ $('Generate Audit Receipt').item.json.client_id }}',\n  '{{ $('Generate Audit Receipt').item.json.task_id }}',\n  'execution_complete',\n  '{{ $('Generate Audit Receipt').item.json.metadata.namespace }}',\n  'success',\n  {{ $('Generate Audit Receipt').item.json.execution.execution_duration_ms }},\n  '{\"compliance_status\": \"APPROVED\", \"receipt_id\": \"{{ $('Generate Audit Receipt').item.json.audit_receipt.receipt_id }}\"}'::jsonb\n);",
+        "options": {}
+      },
+      "id": "log-success",
+      "name": "Log Access Complete",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1540, 300],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "Ops1 PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format successful response\nconst data = $('Generate Audit Receipt').first().json;\n\nreturn {\n  json: {\n    success: true,\n    task_id: data.task_id,\n    audit_receipt: data.audit_receipt,\n    result: {\n      format: data.mode === 'excel' ? 'python' : 'sql',\n      content: data.execution.generated_output\n    },\n    legal_disclaimer: 'This output was generated by automated software and should be reviewed by qualified personnel before business use. Multicomm.ai provides software tools, not professional services or employment.'\n  }\n};"
+      },
+      "id": "format-success",
+      "name": "Format Success Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1760, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "respond-success",
+      "name": "Respond - Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1980, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate block report\nconst data = $input.first().json;\n\nconst blockReport = {\n  blocked: true,\n  task_id: data.task_id,\n  client_id: data.client_id,\n  timestamp: new Date().toISOString(),\n  compliance_result: data.compliance_result,\n  original_task: data.task_description,\n  mode: data.mode\n};\n\nreturn {\n  json: {\n    ...data,\n    block_report: blockReport\n  }\n};"
+      },
+      "id": "generate-block-report",
+      "name": "Generate Block Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 500]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO security_events (\n  client_id,\n  task_id,\n  event_type,\n  severity,\n  description,\n  evidence\n) VALUES (\n  '{{ $json.client_id }}',\n  '{{ $json.task_id }}',\n  '{{ $json.compliance_result.violation_type === \"PII\" ? \"pii_detected\" : ($json.compliance_result.violation_type === \"SQL_DANGER\" ? \"sql_injection_attempt\" : \"rule_violation\") }}',\n  'high',\n  '{{ $json.compliance_result.block_reason }}',\n  '{{ $json.compliance_result.evidence }}'\n);",
+        "options": {}
+      },
+      "id": "log-security-event",
+      "name": "Log Security Event",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1320, 500],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "Ops1 PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO access_log (\n  client_id,\n  task_id,\n  action_type,\n  namespace_accessed,\n  status,\n  block_reason,\n  metadata\n) VALUES (\n  '{{ $('Generate Block Report').item.json.client_id }}',\n  '{{ $('Generate Block Report').item.json.task_id }}',\n  'blocked',\n  '{{ $('Generate Block Report').item.json.metadata.namespace }}',\n  'blocked',\n  '{{ $('Generate Block Report').item.json.compliance_result.block_reason }}',\n  '{{ JSON.stringify($('Generate Block Report').item.json.compliance_result) }}'::jsonb\n);",
+        "options": {}
+      },
+      "id": "log-blocked",
+      "name": "Log Blocked Access",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1540, 500],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "Ops1 PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format error response\nconst data = $('Generate Block Report').first().json;\n\nreturn {\n  json: {\n    success: false,\n    task_id: data.task_id,\n    error: 'COMPLIANCE_BLOCKED',\n    block_reason: data.compliance_result.block_reason,\n    violation_type: data.compliance_result.violation_type,\n    recommendation: data.compliance_result.recommendation,\n    legal_notice: 'This request was blocked by Ops-1 Compliance Module for security reasons. The incident has been logged for review.'\n  }\n};"
+      },
+      "id": "format-error",
+      "name": "Format Error Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1760, 500]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": 422
+        }
+      },
+      "id": "respond-blocked",
+      "name": "Respond - Blocked",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1980, 500]
+    }
+  ],
+  "connections": {
+    "Webhook - Compliance Check": {
+      "main": [
+        [
+          {
+            "node": "Validate Audit Package",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Audit Package": {
+      "main": [
+        [
+          {
+            "node": "Compliance Scan (Claude)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compliance Scan (Claude)": {
+      "main": [
+        [
+          {
+            "node": "Parse Compliance Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Compliance Result": {
+      "main": [
+        [
+          {
+            "node": "Compliance Passed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compliance Passed?": {
+      "main": [
+        [
+          {
+            "node": "Generate Audit Receipt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Generate Block Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Audit Receipt": {
+      "main": [
+        [
+          {
+            "node": "Save Audit Receipt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Audit Receipt": {
+      "main": [
+        [
+          {
+            "node": "Log Access Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Access Complete": {
+      "main": [
+        [
+          {
+            "node": "Format Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Success Response": {
+      "main": [
+        [
+          {
+            "node": "Respond - Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Block Report": {
+      "main": [
+        [
+          {
+            "node": "Log Security Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Security Event": {
+      "main": [
+        [
+          {
+            "node": "Log Blocked Access",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Blocked Access": {
+      "main": [
+        [
+          {
+            "node": "Format Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Error Response": {
+      "main": [
+        [
+          {
+            "node": "Respond - Blocked",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "Ops-1",
+      "createdAt": "2025-01-21T00:00:00.000Z",
+      "updatedAt": "2025-01-21T00:00:00.000Z"
+    },
+    {
+      "name": "Compliance",
+      "createdAt": "2025-01-21T00:00:00.000Z",
+      "updatedAt": "2025-01-21T00:00:00.000Z"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2025-01-21T00:00:00.000Z",
+  "versionId": "1"
+}

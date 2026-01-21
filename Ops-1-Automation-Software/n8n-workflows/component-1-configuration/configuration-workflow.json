@@ -1,0 +1,505 @@
+{
+  "name": "Ops-1 Component 1 - Configuration Module",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ops1/configure",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook - Configuration Request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 300],
+      "webhookId": "ops1-configure"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate Client ID and extract input data\nconst input = $input.first().json;\n\nif (!input.client_id) {\n  throw new Error('VALIDATION_ERROR: client_id is required');\n}\n\nif (!input.data || !input.data.content) {\n  throw new Error('VALIDATION_ERROR: data.content is required');\n}\n\n// Validate client_id format (alphanumeric, underscores, hyphens only)\nconst clientIdPattern = /^[A-Za-z0-9_-]+$/;\nif (!clientIdPattern.test(input.client_id)) {\n  throw new Error('VALIDATION_ERROR: client_id contains invalid characters');\n}\n\nreturn {\n  json: {\n    client_id: input.client_id,\n    raw_content: input.data.content,\n    configuration_date: new Date().toISOString(),\n    task_id: `CONFIG_${input.client_id}_${Date.now()}`,\n    namespace: `${input.client_id}_RULES`\n  }\n};"
+      },
+      "id": "validate-client",
+      "name": "Validate Client ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO access_log (client_id, task_id, action_type, namespace_accessed, status, metadata)\nVALUES ('{{ $json.client_id }}', '{{ $json.task_id }}', 'configuration', '{{ $json.namespace }}', 'success', '{\"stage\": \"start\"}'::jsonb)\nRETURNING log_id;",
+        "options": {}
+      },
+      "id": "log-start",
+      "name": "Log Access Start",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [440, 300],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "Ops1 PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"claude-3-5-haiku-latest\",\n  \"max_tokens\": 4096,\n  \"system\": \"You are a Data Sanitization Module. Your function is to remove Personally Identifiable Information (PII) from text while preserving business logic and instructions.\\n\\nREMOVE AND REPLACE WITH PLACEHOLDERS:\\n- Full names → [NAME]\\n- Email addresses → [EMAIL]\\n- Phone numbers → [PHONE]\\n- Physical addresses → [ADDRESS]\\n- Social Insurance Numbers / SSN → [ID_NUMBER]\\n- Credit card numbers → [PAYMENT_INFO]\\n- Dates of birth → [DOB]\\n- IP addresses → [IP]\\n\\nPRESERVE:\\n- Business rules and instructions\\n- Formatting preferences\\n- Process descriptions\\n- Date FORMAT preferences (e.g., \\\"use DD/MM/YYYY\\\") - preserve the format rule, not actual dates\\n- Software/tool names\\n- Department names (without individual names)\\n\\nOUTPUT FORMAT:\\nReturn the sanitized text only. Do not add commentary or explanations.\\n\\nIf the input contains no PII, return it unchanged.\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Sanitize the following text by removing all PII:\\n\\n{{ $('Validate Client ID').item.json.raw_content }}\"\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "pii-sanitization",
+      "name": "PII Sanitization (Claude)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ANTHROPIC_CREDENTIAL_ID",
+          "name": "Anthropic API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract sanitized content from Claude response\nconst response = $input.first().json;\nconst previousData = $('Validate Client ID').first().json;\n\nif (!response.content || !response.content[0] || !response.content[0].text) {\n  throw new Error('AI_ERROR: Invalid response from PII sanitization');\n}\n\nconst sanitizedContent = response.content[0].text;\n\nreturn {\n  json: {\n    ...previousData,\n    sanitized_content: sanitizedContent,\n    pii_sanitization_complete: true\n  }\n};"
+      },
+      "id": "parse-sanitized",
+      "name": "Parse Sanitized Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"claude-3-5-haiku-latest\",\n  \"max_tokens\": 8192,\n  \"system\": \"You are a Configuration Extraction Module. Your function is to analyze business communications and documentation to extract explicit rules and preferences for software configuration.\\n\\nEXTRACT THE FOLLOWING CATEGORIES:\\n\\n1. DATE/TIME FORMATTING\\n   - Preferred date format (DD/MM/YYYY, MM/DD/YYYY, YYYY-MM-DD)\\n   - Timezone preferences\\n   - Fiscal year definitions\\n\\n2. NUMBER FORMATTING\\n   - Currency symbols and placement\\n   - Decimal separators (. or ,)\\n   - Thousands separators\\n   - Rounding rules\\n\\n3. NAMING CONVENTIONS\\n   - File naming patterns\\n   - Column header preferences\\n   - Case preferences (Title Case, UPPERCASE, lowercase)\\n\\n4. DATA HANDLING\\n   - Required columns/fields\\n   - Prohibited actions or fields\\n   - Default values\\n   - Sort order preferences\\n\\n5. OUTPUT PREFERENCES\\n   - File format preferences (CSV, XLSX, PDF)\\n   - Language (English, Spanish, Bilingual)\\n   - Tone/formality level for generated text\\n\\n6. PROHIBITED ACTIONS\\n   - Explicitly forbidden operations\\n   - Restricted data access\\n   - Compliance requirements mentioned\\n\\nOUTPUT FORMAT (JSON):\\n{\\n  \\\"client_id\\\": \\\"[FROM INPUT]\\\",\\n  \\\"configuration_version\\\": \\\"1.0\\\",\\n  \\\"rules\\\": [\\n    {\\n      \\\"rule_id\\\": \\\"R001\\\",\\n      \\\"category\\\": \\\"[CATEGORY]\\\",\\n      \\\"rule\\\": \\\"[EXPLICIT RULE STATEMENT]\\\",\\n      \\\"source_quote\\\": \\\"[BRIEF QUOTE FROM SOURCE THAT SUPPORTS THIS RULE]\\\",\\n      \\\"confidence\\\": \\\"HIGH|MEDIUM|LOW\\\"\\n    }\\n  ],\\n  \\\"ambiguities\\\": [\\n    {\\n      \\\"issue\\\": \\\"[DESCRIPTION OF CONTRADICTORY OR UNCLEAR INSTRUCTION]\\\",\\n      \\\"recommendation\\\": \\\"[SUGGESTED CLARIFICATION TO REQUEST FROM CLIENT]\\\"\\n    }\\n  ]\\n}\\n\\nIMPORTANT:\\n- Only extract EXPLICIT rules, not inferred preferences\\n- Flag contradictions in the \\\"ambiguities\\\" section\\n- Mark confidence as LOW if rule is mentioned only once\\n- Do not invent rules not present in the source material\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Extract configuration rules from the following sanitized business documentation for client_id: {{ $json.client_id }}\\n\\n{{ $json.sanitized_content }}\"\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "rule-extraction",
+      "name": "Rule Extraction (Claude)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1100, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ANTHROPIC_CREDENTIAL_ID",
+          "name": "Anthropic API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse extracted rules and prepare for Pinecone\nconst response = $input.first().json;\nconst previousData = $('Parse Sanitized Content').first().json;\n\nif (!response.content || !response.content[0] || !response.content[0].text) {\n  throw new Error('AI_ERROR: Invalid response from rule extraction');\n}\n\nlet extractedRules;\ntry {\n  // Extract JSON from response (may be wrapped in markdown code blocks)\n  let jsonText = response.content[0].text;\n  const jsonMatch = jsonText.match(/```(?:json)?\\s*([\\s\\S]*?)```/);\n  if (jsonMatch) {\n    jsonText = jsonMatch[1];\n  }\n  extractedRules = JSON.parse(jsonText);\n} catch (e) {\n  throw new Error(`AI_ERROR: Failed to parse rule extraction JSON: ${e.message}`);\n}\n\n// Calculate retention expiry (default 12 months)\nconst retentionExpiry = new Date();\nretentionExpiry.setFullYear(retentionExpiry.getFullYear() + 1);\n\n// Prepare records for Pinecone\nconst pineconeRecords = extractedRules.rules.map((rule, index) => ({\n  id: `${previousData.client_id}_${rule.rule_id}`,\n  values: [], // Will be populated by embedding\n  metadata: {\n    client_id: previousData.client_id,\n    rule_id: rule.rule_id,\n    category: rule.category,\n    rule_text: rule.rule,\n    source_quote: rule.source_quote,\n    confidence: rule.confidence,\n    configuration_date: previousData.configuration_date,\n    retention_expiry: retentionExpiry.toISOString(),\n    version: extractedRules.configuration_version\n  }\n}));\n\nreturn {\n  json: {\n    ...previousData,\n    extracted_rules: extractedRules,\n    pinecone_records: pineconeRecords,\n    rule_count: extractedRules.rules.length,\n    ambiguity_count: extractedRules.ambiguities?.length || 0,\n    retention_expiry: retentionExpiry.toISOString(),\n    requires_human_review: extractedRules.ambiguities?.length > 0 || extractedRules.rules.some(r => r.confidence === 'LOW')\n  }\n};"
+      },
+      "id": "parse-rules",
+      "name": "Parse & Prepare Rules",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1320, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "requires-review",
+              "leftValue": "={{ $json.requires_human_review }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-review-needed",
+      "name": "Requires Human Review?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1540, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO client_configurations (client_id, version, retention_expiry, rule_count, status, pinecone_namespace, metadata)\nVALUES (\n  '{{ $json.client_id }}',\n  '{{ $json.extracted_rules.configuration_version }}',\n  '{{ $json.retention_expiry }}'::timestamptz,\n  {{ $json.rule_count }},\n  'pending_review',\n  '{{ $json.namespace }}',\n  '{{ JSON.stringify($json.extracted_rules.ambiguities) }}'::jsonb\n)\nON CONFLICT (client_id, version) DO UPDATE SET\n  rule_count = EXCLUDED.rule_count,\n  status = 'pending_review',\n  metadata = EXCLUDED.metadata;",
+        "options": {}
+      },
+      "id": "save-pending-review",
+      "name": "Save as Pending Review",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1760, 200],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "Ops1 PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/embeddings",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"text-embedding-3-small\",\n  \"input\": {{ JSON.stringify($json.extracted_rules.rules.map(r => r.category + ': ' + r.rule)) }}\n}",
+        "options": {}
+      },
+      "id": "generate-embeddings",
+      "name": "Generate Embeddings",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1760, 400],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "OPENAI_CREDENTIAL_ID",
+          "name": "OpenAI API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Combine rules with their embeddings\nconst embedResponse = $input.first().json;\nconst rulesData = $('Parse & Prepare Rules').first().json;\n\nconst embeddings = embedResponse.data;\n\n// Match embeddings to records\nconst recordsWithEmbeddings = rulesData.pinecone_records.map((record, index) => ({\n  ...record,\n  values: embeddings[index].embedding\n}));\n\nreturn {\n  json: {\n    ...rulesData,\n    pinecone_records: recordsWithEmbeddings\n  }\n};"
+      },
+      "id": "combine-embeddings",
+      "name": "Combine Embeddings with Rules",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1980, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://{{ $env.PINECONE_HOST }}/vectors/upsert",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"vectors\": {{ JSON.stringify($json.pinecone_records) }},\n  \"namespace\": \"{{ $json.namespace }}\"\n}",
+        "options": {}
+      },
+      "id": "upsert-pinecone",
+      "name": "Upsert to Pinecone",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2200, 400],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "PINECONE_CREDENTIAL_ID",
+          "name": "Pinecone API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO client_configurations (client_id, version, retention_expiry, rule_count, status, pinecone_namespace)\nVALUES (\n  '{{ $('Parse & Prepare Rules').item.json.client_id }}',\n  '{{ $('Parse & Prepare Rules').item.json.extracted_rules.configuration_version }}',\n  '{{ $('Parse & Prepare Rules').item.json.retention_expiry }}'::timestamptz,\n  {{ $('Parse & Prepare Rules').item.json.rule_count }},\n  'active',\n  '{{ $('Parse & Prepare Rules').item.json.namespace }}'\n)\nON CONFLICT (client_id, version) DO UPDATE SET\n  rule_count = EXCLUDED.rule_count,\n  status = 'active';",
+        "options": {}
+      },
+      "id": "save-active-config",
+      "name": "Save Active Configuration",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [2420, 400],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "Ops1 PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO access_log (client_id, task_id, action_type, namespace_accessed, records_affected, status, metadata)\nVALUES (\n  '{{ $('Parse & Prepare Rules').item.json.client_id }}',\n  '{{ $('Parse & Prepare Rules').item.json.task_id }}',\n  'configuration',\n  '{{ $('Parse & Prepare Rules').item.json.namespace }}',\n  {{ $('Parse & Prepare Rules').item.json.rule_count }},\n  'success',\n  '{\"stage\": \"complete\", \"status\": \"active\"}'::jsonb\n);",
+        "options": {}
+      },
+      "id": "log-complete",
+      "name": "Log Access Complete",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [2640, 400],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "Ops1 PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": true,\n  \"client_id\": \"{{ $('Parse & Prepare Rules').item.json.client_id }}\",\n  \"task_id\": \"{{ $('Parse & Prepare Rules').item.json.task_id }}\",\n  \"configuration\": {\n    \"version\": \"{{ $('Parse & Prepare Rules').item.json.extracted_rules.configuration_version }}\",\n    \"rules_extracted\": {{ $('Parse & Prepare Rules').item.json.rule_count }},\n    \"namespace\": \"{{ $('Parse & Prepare Rules').item.json.namespace }}\",\n    \"status\": \"active\",\n    \"retention_expiry\": \"{{ $('Parse & Prepare Rules').item.json.retention_expiry }}\"\n  },\n  \"legal_notice\": \"This configuration was generated by Ops-1 Automation Software. Rules have been extracted from provided documentation and should be reviewed by qualified personnel.\"\n}",
+        "options": {}
+      },
+      "id": "respond-success",
+      "name": "Respond - Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2860, 400]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": true,\n  \"client_id\": \"{{ $('Parse & Prepare Rules').item.json.client_id }}\",\n  \"task_id\": \"{{ $('Parse & Prepare Rules').item.json.task_id }}\",\n  \"configuration\": {\n    \"version\": \"{{ $('Parse & Prepare Rules').item.json.extracted_rules.configuration_version }}\",\n    \"rules_extracted\": {{ $('Parse & Prepare Rules').item.json.rule_count }},\n    \"status\": \"pending_review\",\n    \"requires_review_reason\": \"Ambiguities detected or low confidence rules present\"\n  },\n  \"ambiguities\": {{ JSON.stringify($('Parse & Prepare Rules').item.json.extracted_rules.ambiguities) }},\n  \"legal_notice\": \"This configuration requires human review before activation. Please review flagged ambiguities and confirm rules.\"\n}",
+        "options": {}
+      },
+      "id": "respond-pending-review",
+      "name": "Respond - Pending Review",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1980, 200]
+    }
+  ],
+  "connections": {
+    "Webhook - Configuration Request": {
+      "main": [
+        [
+          {
+            "node": "Validate Client ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Client ID": {
+      "main": [
+        [
+          {
+            "node": "Log Access Start",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Access Start": {
+      "main": [
+        [
+          {
+            "node": "PII Sanitization (Claude)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PII Sanitization (Claude)": {
+      "main": [
+        [
+          {
+            "node": "Parse Sanitized Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Sanitized Content": {
+      "main": [
+        [
+          {
+            "node": "Rule Extraction (Claude)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rule Extraction (Claude)": {
+      "main": [
+        [
+          {
+            "node": "Parse & Prepare Rules",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse & Prepare Rules": {
+      "main": [
+        [
+          {
+            "node": "Requires Human Review?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Requires Human Review?": {
+      "main": [
+        [
+          {
+            "node": "Save as Pending Review",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Generate Embeddings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save as Pending Review": {
+      "main": [
+        [
+          {
+            "node": "Respond - Pending Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Embeddings": {
+      "main": [
+        [
+          {
+            "node": "Combine Embeddings with Rules",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Combine Embeddings with Rules": {
+      "main": [
+        [
+          {
+            "node": "Upsert to Pinecone",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert to Pinecone": {
+      "main": [
+        [
+          {
+            "node": "Save Active Configuration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Active Configuration": {
+      "main": [
+        [
+          {
+            "node": "Log Access Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Access Complete": {
+      "main": [
+        [
+          {
+            "node": "Respond - Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "Ops-1",
+      "createdAt": "2025-01-21T00:00:00.000Z",
+      "updatedAt": "2025-01-21T00:00:00.000Z"
+    },
+    {
+      "name": "Configuration",
+      "createdAt": "2025-01-21T00:00:00.000Z",
+      "updatedAt": "2025-01-21T00:00:00.000Z"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2025-01-21T00:00:00.000Z",
+  "versionId": "1"
+}

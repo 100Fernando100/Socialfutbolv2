@@ -1,0 +1,45 @@
+{
+  "_comment": "Template for onboarding a new client",
+  "client_id": "CLIENT_TEMPLATE",
+  "company_name": "Example Company Inc.",
+  "contact_email": "admin@example.com",
+  "license": {
+    "status": "active",
+    "start_date": "2025-01-21",
+    "end_date": "2026-01-21",
+    "tier": "standard"
+  },
+  "jurisdiction": "CA-PIPEDA",
+  "data_retention": {
+    "period_days": 365,
+    "auto_delete": true
+  },
+  "permissions": {
+    "modes_enabled": ["excel", "sql"],
+    "max_requests_per_day": 1000,
+    "max_file_size_mb": 50
+  },
+  "database_access": {
+    "_comment": "Only include if SQL mode is enabled",
+    "connection_type": "read_only",
+    "schema_whitelist": [
+      {
+        "table": "sales",
+        "columns": ["id", "date", "amount", "product_id", "region"]
+      },
+      {
+        "table": "products",
+        "columns": ["id", "name", "category", "price"]
+      },
+      {
+        "table": "regions",
+        "columns": ["id", "name", "country"]
+      }
+    ]
+  },
+  "notification_settings": {
+    "email_on_block": true,
+    "email_on_config_change": true,
+    "admin_emails": ["admin@example.com"]
+  }
+}
