@@ -1,0 +1,23 @@
+{
+  "meta": {
+    "description": "NODO CORREGIDO: Parse Retrieved Rules - Umbral 0.75 + Fallback + Logging",
+    "original_issue": "Umbral 0.5 muy bajo para legal/auditoría - traía reglas poco relevantes",
+    "changes": [
+      "Umbral subido de 0.5 a 0.75",
+      "Protección contra respuesta inválida de Pinecone",
+      "Fallback cuando no hay reglas relevantes",
+      "Logging de métricas para auditoría",
+      "Valores por defecto en metadata para evitar crashes"
+    ]
+  },
+  "node": {
+    "parameters": {
+      "jsCode": "// === PARSE RETRIEVED RULES - FIXED VERSION ===\n// Cambios: Umbral 0.75, fallback robusto, logging para auditoría\n\nconst pineconeResponse = $input.first().json;\nconst taskData = $('Validate Input').first().json;\n\n// CONFIGURACIÓN - Ajusta según testing\nconst THRESHOLD = 0.75;  // Subido de 0.5 para legal/auditoría\n\n// 1. Protección contra respuesta inválida de Pinecone\nif (!pineconeResponse || !Array.isArray(pineconeResponse.matches)) {\n  console.warn('[Ops-1] Pinecone response inválida o sin matches');\n  return {\n    json: {\n      ...taskData,\n      client_rules: [],\n      rules_context: 'Error en recuperación de reglas. Usando mejores prácticas estándar.',\n      rules_count: 0,\n      retrieval_error: true,\n      threshold_used: THRESHOLD\n    }\n  };\n}\n\n// 2. Filtrar con umbral alto + valores por defecto en metadata\nconst clientRules = pineconeResponse.matches\n  .filter(match => (match.score || 0) > THRESHOLD)\n  .map(match => ({\n    rule_id: match.metadata?.rule_id || 'unknown',\n    category: match.metadata?.category || 'uncategorized',\n    rule_text: match.metadata?.rule_text || '[texto no disponible]',\n    confidence: match.metadata?.confidence || 'UNKNOWN',\n    relevance_score: match.score\n  }));\n\n// 3. Construir contexto con fallback\nlet rulesContext;\nif (clientRules.length > 0) {\n  rulesContext = clientRules\n    .map(r => `[${r.rule_id}] (${r.category}): ${r.rule_text} (score: ${r.relevance_score.toFixed(3)})`)\n    .join('\\n\\n');\n} else {\n  rulesContext = `No se encontraron reglas con relevancia > ${THRESHOLD}. ` +\n    'Usando mejores prácticas estándar. ' +\n    'Recomendación: revisar manualmente o ampliar descripción de tarea.';\n}\n\n// 4. Logging para auditoría\nconst totalMatches = pineconeResponse.matches.length;\nconst avgScore = totalMatches > 0 \n  ? (pineconeResponse.matches.reduce((sum, m) => sum + (m.score || 0), 0) / totalMatches).toFixed(3)\n  : 0;\n\nconsole.log(`[Ops-1] Retrieval: ${clientRules.length}/${totalMatches} reglas > ${THRESHOLD} (avg score: ${avgScore})`);\n\nreturn {\n  json: {\n    ...taskData,\n    client_rules: clientRules,\n    rules_context: rulesContext,\n    rules_count: clientRules.length,\n    threshold_used: THRESHOLD,\n    total_matches: totalMatches,\n    avg_score: parseFloat(avgScore)\n  }\n};"
+    },
+    "id": "parse-rules",
+    "name": "Parse Retrieved Rules",
+    "type": "n8n-nodes-base.code",
+    "typeVersion": 2,
+    "position": [1540, 520]
+  }
+}

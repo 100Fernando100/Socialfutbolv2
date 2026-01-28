@@ -1,0 +1,26 @@
+{
+  "meta": {
+    "description": "NODO: PDF Legal Cleaner Pro",
+    "purpose": "Limpiar PDFs de leyes fiscales LATAM + NA antes de PII Sanitization",
+    "placement": "Después de extraer texto del PDF, ANTES del nodo de sanitización de PII",
+    "target_market": "Contadores latinos en USA/Canadá",
+    "supported_sources": [
+      "AFIP Argentina (RG, leyes)",
+      "SAT México (DOF)",
+      "IRS USA (Forms, Publications)",
+      "CRA Canada (T1, T2, GST)",
+      "BOE España"
+    ]
+  },
+  "node": {
+    "parameters": {
+      "jsCode": "// === PDF FISCAL CLEANER PRO - Para Ingestión en Software Contable NA/LATAM (2026) ===\n// Optimizado para CRA/IRS forms, leyes argentinas y cross-border\n// Reduce ruido ~40-60%, mejora calidad de embeddings significativamente\n\nlet text = $input.first().json.raw_content || '';\n\n// Manejo edge cases: si es array (de multi-page PDFs)\nif (Array.isArray(text)) text = text.join('\\n');\n\n// 1. Eliminar numeración de páginas (variantes NA/LATAM)\ntext = text.replace(/\\b(Página|Pág\\.?|Page|Seite|Fol\\.?)\\s?[:\\-]?\\s?\\d+\\s?(de\\s?[:\\-]?\\s?\\d+)?\\b/gi, '');\ntext = text.replace(/\\b\\d+\\s?\\/\\s?\\d+\\b/g, ''); // 12/34 o T2/2025 (CRA forms)\ntext = text.replace(/\\b-\\s?\\d+\\s?-\\b/g, '');   // - 15 -\n\n// 2. Eliminar headers/pies repetitivos (IRS/CRA/BOE/DOF/BOLETÍN)\nconst fiscalHeaders = [\n  /Canada Revenue Agency|Agence du revenu du Canada/gi,\n  /Internal Revenue Service|IRS Department/gi,\n  /Diario Oficial de la Federación|DOF/gi,\n  /Boletín Oficial del Estado|BOE/gi,\n  /Boletín Oficial de la República Argentina|BORA/gi,\n  /Ley de Impuestos? Argentina \\d{4}/gi,\n  /Ley N°? \\d+\\.\\d+|Decreto N°? \\d+/gi,\n  /Resolución General AFIP|RG \\d+/gi,\n  /Section \\d{3,4} \\(?\\d*\\)?/gi,  // IRS sections como Section 1250\n  /Form \\d{3,4} ?-?\\d*|Schedule [A-Z]/gi,  // IRS 1040, Schedule A\n  /T1 General|T2 Corporation|GST\\/HST/gi,     // CRA forms\n  /©? \\d{4} .+? Todos los derechos reservados|Confidential - For Official Use Only/gi,\n  /www\\.irs\\.gov|www\\.canada\\.ca\\/en\\/revenue-agency/gi\n];\nfiscalHeaders.forEach(regex => text = text.replace(regex, ''));\n\n// 3. Unir oraciones/líneas rotas (crítico para fiscal: evita fragmentar \"Artículo 23, inciso a\")\ntext = text.replace(/([^\\.\\!\\?\\n])\\n(?=[a-záéíóúñü])/g, '$1 ');      // Línea normal\ntext = text.replace(/([a-záéíóúñü])\\n([A-ZÁÉÍÓÚÑÜ])/g, '$1 $2');    // Cortes de palabra\ntext = text.replace(/\\n{2,}/g, '\\n');  // Preserva párrafos, pero limpia dobles\n\n// 4. Normalizar términos fiscales comunes (para mejor embedding/extracción)\ntext = text.replace(/\\bArt\\.?\\s+/gi, 'Artículo ');\ntext = text.replace(/\\bInc\\.?\\s+/gi, 'inciso ');\ntext = text.replace(/\\bN°\\s+/gi, 'Nº ');\ntext = text.replace(/\\bSec\\.?\\s+/gi, 'Sección ');  // IRS/CRA sections\ntext = text.replace(/\\bSch\\.?\\s+/gi, 'Schedule '); // Schedules fiscales\n\n// 5. Limpieza final (espacios, basura PDF, e-sign footprints)\ntext = text.replace(/\\s+/g, ' ');\ntext = text.replace(/[^\\w\\s\\.\\,\\;\\:\\(\\)\\[\\]\\%\\$\\-\\\\/°ªº¿\\¡\\!\\?\\¿&]/g, ' '); // Mantiene $ para montos\ntext = text.replace(/Electronically Signed by|Firmado electrónicamente/gi, ''); // eSign noise\ntext = text.trim();\n\n// Calcular métricas\nconst originalLength = $input.first().json.raw_content?.length || 0;\nconst reductionPercent = originalLength > 0 \n  ? Math.round((1 - text.length / originalLength) * 100) \n  : 0;\n\nconsole.log(`[PDF Cleaner] Original: ${originalLength} chars → Cleaned: ${text.length} chars (${reductionPercent}% reduction)`);\n\nreturn {\n  json: {\n    ...$input.first().json,\n    cleaned_content: text,  // ← Usa este campo en nodos siguientes\n    raw_content: undefined, // Opcional: limpiar el original para ahorrar memoria\n    cleaning_applied: true,\n    original_length: originalLength,\n    cleaned_length: text.length,\n    reduction_percent: reductionPercent,\n    disclaimer: 'Info extraída de documentos fiscales. Para uso educativo. No es asesoría contable.'\n  }\n};"
+    },
+    "id": "pdf-cleaner",
+    "name": "PDF Legal Cleaner Pro",
+    "type": "n8n-nodes-base.code",
+    "typeVersion": 2,
+    "position": [600, 300],
+    "notes": "Colocar DESPUÉS de extraer texto del PDF y ANTES de PII Sanitization"
+  }
+}

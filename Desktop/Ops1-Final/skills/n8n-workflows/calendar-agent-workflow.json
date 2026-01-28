@@ -1,0 +1,101 @@
+{
+  "name": "Ops1-Calendar-Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "schedule-meeting",
+        "responseMode": "responseNode"
+      },
+      "name": "Schedule Request",
+      "type": "n8n-nodes-base.webhook",
+      "position": [250, 300],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "url": "https://api.anthropic.com/v1/messages",
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "x-api-key", "value": "={{ $env.ANTHROPIC_API_KEY }}"},
+            {"name": "anthropic-version", "value": "2023-06-01"},
+            {"name": "Content-Type", "value": "application/json"}
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {"name": "model", "value": "claude-3-haiku-20240307"},
+            {"name": "max_tokens", "value": "500"},
+            {"name": "system", "value": "Parse scheduling request. Return JSON: {meeting_type: call/video/in_person, duration: 15/30/60, topic, urgency: asap/this_week/flexible, preferred_date, preferred_time, language: en/es}"},
+            {"name": "messages", "value": "={{ JSON.stringify([{role: 'user', content: $json.body.message || ''}]) }}"}
+          ]
+        }
+      },
+      "name": "Parse Request",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [450, 300],
+      "typeVersion": 3
+    },
+    {
+      "parameters": {
+        "url": "https://api.calendly.com/event_type_available_times",
+        "method": "GET",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "Authorization", "value": "Bearer {{ $env.CALENDLY_API_KEY }}"},
+            {"name": "Content-Type", "value": "application/json"}
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {"name": "event_type", "value": "={{ $env.CALENDLY_EVENT_TYPE_URL }}"},
+            {"name": "start_time", "value": "={{ new Date().toISOString() }}"},
+            {"name": "end_time", "value": "={{ new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString() }}"}
+          ]
+        }
+      },
+      "name": "Get Available Times",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [650, 300],
+      "typeVersion": 3
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format available slots\nconst slots = $json.collection || [];\nconst language = $('Schedule Request').first().json.body?.language || 'en';\n\nconst formatted = slots.slice(0, 5).map((slot, i) => {\n  const date = new Date(slot.start_time);\n  return {\n    index: i + 1,\n    datetime_utc: slot.start_time,\n    day: date.toLocaleDateString('en-US', { weekday: 'long' }),\n    date: date.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),\n    time: date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })\n  };\n});\n\nlet message;\nif (language === 'es') {\n  message = 'Estos son los horarios disponibles:\\n\\n';\n  formatted.forEach(s => {\n    message += `${s.index}. ${s.day}, ${s.date} a las ${s.time}\\n`;\n  });\n  message += '\\n¿Cuál prefieres?';\n} else {\n  message = 'Here are the available times:\\n\\n';\n  formatted.forEach(s => {\n    message += `${s.index}. ${s.day}, ${s.date} at ${s.time}\\n`;\n  });\n  message += '\\nWhich one works for you?';\n}\n\nreturn {\n  json: {\n    success: true,\n    message,\n    slots: formatted,\n    booking_link: $env.CALENDLY_BOOKING_URL || 'https://calendly.com/your-link'\n  }\n};"
+      },
+      "name": "Format Response",
+      "type": "n8n-nodes-base.code",
+      "position": [850, 300],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}"
+      },
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [1050, 300],
+      "typeVersion": 1
+    }
+  ],
+  "connections": {
+    "Schedule Request": {
+      "main": [[{"node": "Parse Request", "type": "main", "index": 0}]]
+    },
+    "Parse Request": {
+      "main": [[{"node": "Get Available Times", "type": "main", "index": 0}]]
+    },
+    "Get Available Times": {
+      "main": [[{"node": "Format Response", "type": "main", "index": 0}]]
+    },
+    "Format Response": {
+      "main": [[{"node": "Respond", "type": "main", "index": 0}]]
+    }
+  }
+}

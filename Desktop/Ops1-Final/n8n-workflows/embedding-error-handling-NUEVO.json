@@ -1,0 +1,69 @@
+{
+  "meta": {
+    "description": "NODO NUEVO: Handle Embedding Error",
+    "purpose": "Verificar que el embedding se generó correctamente antes de query a Pinecone",
+    "placement": "Después de 'Embed Task Description', antes de 'Retrieve Client Rules'",
+    "branches": {
+      "true": "Embedding OK - continúa a Pinecone",
+      "false": "Embedding falló - va a fallback"
+    }
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "embedding-check",
+              "leftValue": "={{ $json.data && $json.data[0] && $json.data[0].embedding && $json.data[0].embedding.length > 100 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "check-embedding",
+      "name": "Embedding OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1200, 520]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Fallback cuando embedding falla (rate limit, timeout, etc.)\nconst taskData = $('Validate Input').first().json;\n\nconsole.error('[Ops-1] Embedding falló - usando fallback sin reglas específicas');\n\nreturn {\n  json: {\n    ...taskData,\n    client_rules: [],\n    rules_context: 'No se pudo generar embedding de la consulta (posible rate limit o error de API). Procediendo sin reglas específicas del cliente.',\n    rules_count: 0,\n    embedding_failed: true,\n    threshold_used: 0.75\n  }\n};"
+      },
+      "id": "embedding-fallback",
+      "name": "Embedding Fallback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1400, 700]
+    }
+  ],
+  "connections": {
+    "Embed Task Description": {
+      "main": [
+        [{ "node": "Embedding OK?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Embedding OK?": {
+      "main": [
+        [{ "node": "Retrieve Client Rules", "type": "main", "index": 0 }],
+        [{ "node": "Embedding Fallback", "type": "main", "index": 0 }]
+      ]
+    },
+    "Embedding Fallback": {
+      "main": [
+        [{ "node": "Build Analysis Prompt", "type": "main", "index": 0 }]
+      ]
+    }
+  }
+}

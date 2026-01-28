@@ -1,0 +1,418 @@
+{
+  "name": "Ops-1 Accounting Query Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ops1-query",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Query Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "model": "claude-3-haiku-20240307",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a query parser for Ops-1. Extract the following from user queries:\n1. intent: What type of report/data is requested (invoices, p&l, customers, etc.)\n2. data_source: quickbooks or sage (based on context or default to user's connected source)\n3. filters: Any date ranges, customer names, amounts, etc.\n4. output_format: table, summary, or detailed\n\nRespond in JSON format only:\n{\n  \"intent\": \"string\",\n  \"data_source\": \"quickbooks|sage\",\n  \"filters\": {},\n  \"output_format\": \"string\",\n  \"generated_sql\": \"SQL equivalent if applicable\"\n}"
+            },
+            {
+              "role": "user",
+              "content": "={{ $json.query }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.1
+        }
+      },
+      "id": "parse-query",
+      "name": "Parse Natural Language",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1,
+      "position": [450, 300],
+      "credentials": {
+        "anthropicApi": {
+          "id": "anthropic-creds",
+          "name": "Anthropic API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Compliance Auditor Check\nconst parsedQuery = JSON.parse($input.first().json.message.content);\nconst userId = $('Query Webhook').first().json.body.user_id;\nconst userRole = $('Query Webhook').first().json.body.user_role || 'analyst';\nconst query = parsedQuery.generated_sql || $('Query Webhook').first().json.body.query;\n\n// Policy Configuration\nconst blockedCommands = ['DROP', 'DELETE', 'TRUNCATE', 'ALTER', 'INSERT', 'UPDATE'];\nconst piiFields = ['ssn', 'sin', 'social_security', 'credit_card', 'bank_account', 'password', 'routing_number'];\nconst sensitiveFields = ['salary', 'compensation', 'bonus', 'commission', 'termination'];\nconst rolePermissions = {\n  'admin': ['read:all', 'write:all', 'export:all'],\n  'manager': ['read:department', 'export:reports'],\n  'analyst': ['read:assigned', 'export:reports'],\n  'bookkeeper': ['read:financial', 'write:transactions', 'export:financial_reports']\n};\n\nlet decision = 'APPROVED';\nlet violations = [];\nlet warnings = [];\nlet checksPerformed = [];\n\n// Check 1: User Permissions\nchecksPerformed.push('user_permissions');\nconst userPerms = rolePermissions[userRole] || [];\nif (userPerms.length === 0) {\n  decision = 'BLOCKED';\n  violations.push({ check: 'user_permissions', message: `Unknown role: ${userRole}` });\n}\n\n// Check 2: Blocked Commands\nchecksPerformed.push('blocked_operations');\nfor (const cmd of blockedCommands) {\n  if (query.toUpperCase().includes(cmd)) {\n    decision = 'BLOCKED';\n    violations.push({ check: 'blocked_operations', message: `Contains blocked command: ${cmd}` });\n  }\n}\n\n// Check 3: PII Fields\nchecksPerformed.push('pii_access');\nfor (const field of piiFields) {\n  if (query.toLowerCase().includes(field)) {\n    decision = 'BLOCKED';\n    violations.push({ check: 'pii_access', message: `Requests restricted PII: ${field}` });\n  }\n}\n\n// Check 4: Sensitive Fields (Warning)\nchecksPerformed.push('sensitive_keywords');\nfor (const field of sensitiveFields) {\n  if (query.toLowerCase().includes(field)) {\n    if (decision === 'APPROVED') {\n      decision = 'REQUIRES_APPROVAL';\n    }\n    warnings.push({ check: 'sensitive_keywords', message: `Contains sensitive field: ${field}` });\n  }\n}\n\n// Check 5: Query Scope\nchecksPerformed.push('data_scope');\nif (query.toLowerCase().includes('select *') && userRole !== 'admin') {\n  warnings.push({ check: 'data_scope', message: 'Using SELECT * - consider specifying columns' });\n}\n\n// Generate Audit Receipt\nconst timestamp = new Date().toISOString();\nconst dateStr = timestamp.slice(0, 10).replace(/-/g, '');\nconst hash = Math.random().toString(36).substr(2, 8).toUpperCase();\nconst receiptId = `AR-${dateStr}-${hash}`;\n\nreturn {\n  json: {\n    audit_result: {\n      approved: decision === 'APPROVED',\n      decision: decision,\n      receipt_id: receiptId,\n      timestamp: timestamp,\n      user_id: userId,\n      user_role: userRole,\n      checks_performed: checksPerformed,\n      violations: violations,\n      warnings: warnings\n    },\n    parsed_query: parsedQuery,\n    original_query: $('Query Webhook').first().json.body.query\n  }\n};"
+      },
+      "id": "compliance-auditor",
+      "name": "Compliance Auditor",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.audit_result.approved }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "audit-decision",
+      "name": "Audit Decision",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.parsed_query.data_source }}",
+              "value2": "quickbooks"
+            }
+          ]
+        }
+      },
+      "id": "route-datasource",
+      "name": "Route to Data Source",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1050, 200]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://quickbooks.api.intuit.com/v3/company/{{ $credentials.realmId }}/query",
+        "authentication": "oAuth2",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "query",
+              "value": "={{ $json.parsed_query.generated_sql }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "quickbooks-api",
+      "name": "QuickBooks API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1250, 100],
+      "credentials": {
+        "oAuth2Api": {
+          "id": "quickbooks-oauth",
+          "name": "QuickBooks OAuth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.accounting.sage.com/v3.1/{{ $json.parsed_query.intent }}",
+        "authentication": "oAuth2",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "from_date",
+              "value": "={{ $json.parsed_query.filters.start_date || '' }}"
+            },
+            {
+              "name": "to_date",
+              "value": "={{ $json.parsed_query.filters.end_date || '' }}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Site",
+              "value": "={{ $credentials.resourceOwnerId }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "sage-api",
+      "name": "Sage API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1250, 300],
+      "credentials": {
+        "oAuth2Api": {
+          "id": "sage-oauth",
+          "name": "Sage OAuth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format Response with Audit Receipt\nconst auditResult = $('Compliance Auditor').first().json.audit_result;\nconst apiResponse = $input.first().json;\nconst parsedQuery = $('Compliance Auditor').first().json.parsed_query;\n\n// Determine source\nconst source = parsedQuery.data_source === 'quickbooks' ? 'QuickBooks' : 'Sage';\n\n// Format data as table\nlet formattedData = [];\nlet totalRows = 0;\n\nif (apiResponse.QueryResponse) {\n  // QuickBooks response\n  const entityType = Object.keys(apiResponse.QueryResponse)[0];\n  formattedData = apiResponse.QueryResponse[entityType] || [];\n  totalRows = formattedData.length;\n} else if (apiResponse.$items) {\n  // Sage response\n  formattedData = apiResponse.$items;\n  totalRows = apiResponse.$total || formattedData.length;\n} else {\n  formattedData = [apiResponse];\n  totalRows = 1;\n}\n\nreturn {\n  json: {\n    success: true,\n    data: formattedData,\n    meta: {\n      source: source,\n      query: parsedQuery.intent,\n      total_rows: totalRows,\n      generated_at: new Date().toISOString()\n    },\n    audit: {\n      receipt_id: auditResult.receipt_id,\n      user_id: auditResult.user_id,\n      timestamp: auditResult.timestamp,\n      warnings: auditResult.warnings\n    }\n  }\n};"
+      },
+      "id": "format-response",
+      "name": "Format Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Handle Blocked/Requires Approval\nconst auditResult = $input.first().json.audit_result;\n\nlet response = {\n  success: false,\n  error: {\n    code: auditResult.decision,\n    message: auditResult.decision === 'BLOCKED' \n      ? 'Query blocked by compliance policy' \n      : 'Query requires manager approval',\n    violations: auditResult.violations,\n    warnings: auditResult.warnings\n  },\n  audit: {\n    receipt_id: auditResult.receipt_id,\n    user_id: auditResult.user_id,\n    timestamp: auditResult.timestamp\n  }\n};\n\n// If requires approval, trigger notification\nif (auditResult.decision === 'REQUIRES_APPROVAL') {\n  response.next_steps = {\n    action: 'Request approval from manager',\n    approval_link: `https://ops1.ai/approve/${auditResult.receipt_id}`\n  };\n}\n\nreturn { json: response };"
+      },
+      "id": "handle-blocked",
+      "name": "Handle Blocked",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 400]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "respond-success",
+      "name": "Respond Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1650, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": 403
+        }
+      },
+      "id": "respond-blocked",
+      "name": "Respond Blocked",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1250, 400]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "audit_logs",
+        "columns": "receipt_id, user_id, user_role, query, decision, violations, warnings, timestamp",
+        "values": "={{ $json.audit_result.receipt_id }}, {{ $json.audit_result.user_id }}, {{ $json.audit_result.user_role }}, {{ $('Query Webhook').first().json.body.query }}, {{ $json.audit_result.decision }}, {{ JSON.stringify($json.audit_result.violations) }}, {{ JSON.stringify($json.audit_result.warnings) }}, {{ $json.audit_result.timestamp }}"
+      },
+      "id": "log-audit",
+      "name": "Log to Database",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [850, 500],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-creds",
+          "name": "Ops-1 Database"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.audit_result.decision }}",
+              "value2": "BLOCKED"
+            }
+          ]
+        }
+      },
+      "id": "check-alert",
+      "name": "Should Alert?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1050, 550]
+    },
+    {
+      "parameters": {
+        "fromEmail": "alerts@ops1.ai",
+        "toEmail": "compliance@yourcompany.com",
+        "subject": "🚨 Ops-1 Blocked Query Alert",
+        "text": "A query was blocked by the compliance auditor.\n\nReceipt ID: {{ $json.audit_result.receipt_id }}\nUser: {{ $json.audit_result.user_id }}\nTimestamp: {{ $json.audit_result.timestamp }}\n\nViolations:\n{{ $json.audit_result.violations.map(v => '- ' + v.message).join('\\n') }}\n\nOriginal Query:\n{{ $('Query Webhook').first().json.body.query }}"
+      },
+      "id": "send-alert",
+      "name": "Send Alert Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [1250, 550],
+      "credentials": {
+        "smtp": {
+          "id": "smtp-creds",
+          "name": "SMTP"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Query Webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse Natural Language",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Natural Language": {
+      "main": [
+        [
+          {
+            "node": "Compliance Auditor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compliance Auditor": {
+      "main": [
+        [
+          {
+            "node": "Audit Decision",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log to Database",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Audit Decision": {
+      "main": [
+        [
+          {
+            "node": "Route to Data Source",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Blocked",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route to Data Source": {
+      "main": [
+        [
+          {
+            "node": "QuickBooks API",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Sage API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "QuickBooks API": {
+      "main": [
+        [
+          {
+            "node": "Format Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sage API": {
+      "main": [
+        [
+          {
+            "node": "Format Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Response": {
+      "main": [
+        [
+          {
+            "node": "Respond Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Blocked": {
+      "main": [
+        [
+          {
+            "node": "Respond Blocked",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check Alert?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Alert?": {
+      "main": [
+        [
+          {
+            "node": "Send Alert Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "ops-1",
+      "createdAt": "2025-01-28T00:00:00.000Z"
+    },
+    {
+      "name": "accounting",
+      "createdAt": "2025-01-28T00:00:00.000Z"
+    },
+    {
+      "name": "compliance",
+      "createdAt": "2025-01-28T00:00:00.000Z"
+    }
+  ]
+}

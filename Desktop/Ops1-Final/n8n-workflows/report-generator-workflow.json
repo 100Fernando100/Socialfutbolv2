@@ -1,0 +1,76 @@
+{
+  "name": "Ops1-Report-Generator",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "generate-report",
+        "responseMode": "responseNode"
+      },
+      "name": "Report Request",
+      "type": "n8n-nodes-base.webhook",
+      "position": [250, 300],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse report request\nconst body = $json.body || {};\n\nconst reportType = body.report_type || 'pl';\nconst startDate = body.start_date || new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);\nconst endDate = body.end_date || new Date().toISOString().slice(0, 10);\nconst format = body.format || 'pdf';\nconst companyName = body.company_name || 'Company';\nconst dataSource = body.data_source || 'quickbooks';\n\nreturn {\n  json: {\n    report_type: reportType,\n    start_date: startDate,\n    end_date: endDate,\n    format,\n    company_name: companyName,\n    data_source: dataSource\n  }\n};"
+      },
+      "name": "Parse Request",
+      "type": "n8n-nodes-base.code",
+      "position": [450, 300],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.N8N_BASE_URL }}/webhook/quickbooks-query",
+        "method": "POST",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {"name": "query_type", "value": "={{ $json.report_type === 'pl' ? 'profit_and_loss' : $json.report_type === 'balance_sheet' ? 'balance_sheet' : 'aged_receivables' }}"},
+            {"name": "start_date", "value": "={{ $json.start_date }}"},
+            {"name": "end_date", "value": "={{ $json.end_date }}"}
+          ]
+        }
+      },
+      "name": "Fetch Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [650, 300],
+      "typeVersion": 3
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate report\nconst reportType = $('Parse Request').first().json.report_type;\nconst data = $json;\nconst startDate = $('Parse Request').first().json.start_date;\nconst endDate = $('Parse Request').first().json.end_date;\nconst companyName = $('Parse Request').first().json.company_name;\nconst format = $('Parse Request').first().json.format;\n\n// Generate filename\nconst filename = `${reportType}_${startDate}_to_${endDate}.${format}`;\n\n// In production, generate actual document using python-docx or similar\n// For now, return metadata\n\nreturn {\n  json: {\n    success: true,\n    report_type: reportType,\n    filename,\n    format,\n    period: `${startDate} to ${endDate}`,\n    company: companyName,\n    download_url: `/reports/${filename}`,\n    generated_at: new Date().toISOString(),\n    data_summary: {\n      total_revenue: data.total_revenue || 0,\n      total_expenses: data.total_expenses || 0,\n      net_income: data.net_income || 0\n    }\n  }\n};"
+      },
+      "name": "Generate Document",
+      "type": "n8n-nodes-base.code",
+      "position": [850, 300],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}"
+      },
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [1050, 300],
+      "typeVersion": 1
+    }
+  ],
+  "connections": {
+    "Report Request": {
+      "main": [[{"node": "Parse Request", "type": "main", "index": 0}]]
+    },
+    "Parse Request": {
+      "main": [[{"node": "Fetch Data", "type": "main", "index": 0}]]
+    },
+    "Fetch Data": {
+      "main": [[{"node": "Generate Document", "type": "main", "index": 0}]]
+    },
+    "Generate Document": {
+      "main": [[{"node": "Respond", "type": "main", "index": 0}]]
+    }
+  }
+}

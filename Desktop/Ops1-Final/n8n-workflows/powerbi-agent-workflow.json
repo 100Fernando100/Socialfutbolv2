@@ -1,0 +1,101 @@
+{
+  "name": "Ops1-PowerBI-Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "powerbi-agent",
+        "responseMode": "responseNode"
+      },
+      "name": "PowerBI Request",
+      "type": "n8n-nodes-base.webhook",
+      "position": [250, 300],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "url": "https://api.anthropic.com/v1/messages",
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "x-api-key", "value": "={{ $env.ANTHROPIC_API_KEY }}"},
+            {"name": "anthropic-version", "value": "2023-06-01"},
+            {"name": "Content-Type", "value": "application/json"}
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {"name": "model", "value": "claude-3-haiku-20240307"},
+            {"name": "max_tokens", "value": "1000"},
+            {"name": "system", "value": "Parse the dashboard request and return JSON with: dashboard_type (sales/expenses/financial/kpi), title, metrics[], dimensions[], visualizations[{type, metric, dimension}], data_source. Only return valid JSON."},
+            {"name": "messages", "value": "={{ JSON.stringify([{role: 'user', content: $json.body.message || ''}]) }}"}
+          ]
+        }
+      },
+      "name": "Parse Request",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [450, 300],
+      "typeVersion": 3
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse the dashboard config\nlet config;\ntry {\n  let text = $json.content?.[0]?.text || '{}';\n  if (text.includes('```')) {\n    text = text.split('```')[1].replace('json', '').trim();\n  }\n  config = JSON.parse(text);\n} catch (e) {\n  config = {\n    dashboard_type: 'sales',\n    title: 'Sales Dashboard',\n    metrics: ['revenue'],\n    dimensions: ['month'],\n    visualizations: [{type: 'bar', metric: 'revenue', dimension: 'month'}],\n    data_source: 'quickbooks'\n  };\n}\n\nreturn { json: { config, original_request: $('PowerBI Request').first().json.body } };"
+      },
+      "name": "Process Config",
+      "type": "n8n-nodes-base.code",
+      "position": [650, 300],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "url": "https://api.powerbi.com/v1.0/myorg/groups/{{ $env.POWERBI_WORKSPACE_ID }}/datasets",
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "Authorization", "value": "Bearer {{ $env.POWERBI_ACCESS_TOKEN }}"},
+            {"name": "Content-Type", "value": "application/json"}
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {"name": "name", "value": "={{ $json.config.title }}"},
+            {"name": "defaultMode", "value": "Push"},
+            {"name": "tables", "value": "={{ JSON.stringify([{name: 'Data', columns: [{name: 'Date', dataType: 'DateTime'}, {name: 'Amount', dataType: 'Double'}, {name: 'Category', dataType: 'String'}]}]) }}"}
+          ]
+        }
+      },
+      "name": "Create Dataset",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [850, 300],
+      "typeVersion": 3
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, dashboard_title: $('Process Config').first().json.config.title, dataset_id: $json.id || 'pending', embed_url: 'https://app.powerbi.com/reportEmbed?reportId=' + ($json.id || 'pending') }) }}"
+      },
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [1050, 300],
+      "typeVersion": 1
+    }
+  ],
+  "connections": {
+    "PowerBI Request": {
+      "main": [[{"node": "Parse Request", "type": "main", "index": 0}]]
+    },
+    "Parse Request": {
+      "main": [[{"node": "Process Config", "type": "main", "index": 0}]]
+    },
+    "Process Config": {
+      "main": [[{"node": "Create Dataset", "type": "main", "index": 0}]]
+    },
+    "Create Dataset": {
+      "main": [[{"node": "Respond", "type": "main", "index": 0}]]
+    }
+  }
+}

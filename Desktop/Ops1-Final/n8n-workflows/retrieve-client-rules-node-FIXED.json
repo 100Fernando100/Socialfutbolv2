@@ -1,0 +1,55 @@
+{
+  "meta": {
+    "description": "NODO CORREGIDO: Retrieve Client Rules (Pinecone Query)",
+    "original_issue": "URL de Pinecone posiblemente mal configurada + sin timeout + sin header Api-Key explícito",
+    "changes": [
+      "Agregado header Api-Key explícito (requerido en Pinecone 2025+)",
+      "Timeout de 30 segundos para evitar hangs",
+      "Nota sobre PINECONE_HOST - debe ser el host completo del índice"
+    ],
+    "IMPORTANTE": "Verifica que $env.PINECONE_HOST sea el host COMPLETO (ej: mi-index-abc123.svc.us-west4-gcp.pinecone.io)"
+  },
+  "node": {
+    "parameters": {
+      "method": "POST",
+      "url": "=https://{{ $env.PINECONE_HOST }}/query",
+      "authentication": "genericCredentialType",
+      "genericAuthType": "httpHeaderAuth",
+      "sendHeaders": true,
+      "headerParameters": {
+        "parameters": [
+          {
+            "name": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "name": "Api-Key",
+            "value": "={{ $env.PINECONE_API_KEY }}"
+          }
+        ]
+      },
+      "sendBody": true,
+      "specifyBody": "json",
+      "jsonBody": "={\n  \"namespace\": \"{{ $('Validate Input').item.json.namespace }}\",\n  \"vector\": {{ JSON.stringify($json.data[0].embedding) }},\n  \"topK\": 10,\n  \"includeMetadata\": true\n}",
+      "options": {
+        "timeout": 30000,
+        "response": {
+          "response": {
+            "neverError": false
+          }
+        }
+      }
+    },
+    "id": "query-pinecone",
+    "name": "Retrieve Client Rules",
+    "type": "n8n-nodes-base.httpRequest",
+    "typeVersion": 4.2,
+    "position": [1320, 520],
+    "credentials": {
+      "httpHeaderAuth": {
+        "id": "YOUR_CREDENTIAL_ID",
+        "name": "Pinecone API Key"
+      }
+    }
+  }
+}

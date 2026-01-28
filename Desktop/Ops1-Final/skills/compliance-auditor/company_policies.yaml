@@ -1,0 +1,359 @@
+# =============================================================================
+# OPS-1 COMPANY POLICIES CONFIGURATION
+# =============================================================================
+# This file defines the compliance rules for your organization.
+# The Compliance Auditor uses these rules to validate all queries.
+# 
+# Instructions:
+# 1. Copy this file to your n8n instance
+# 2. Customize for your company
+# 3. Update the path in the Compliance Auditor node
+# =============================================================================
+
+company:
+  name: "Your Company Name"
+  industry: "Financial Services"  # Options: Financial Services, Healthcare, Retail, Technology, Manufacturing
+  jurisdiction: 
+    - "Canada"
+    - "USA"
+
+# =============================================================================
+# USER ROLES AND PERMISSIONS
+# =============================================================================
+# Define who can access what data
+# Permissions format: "action:scope"
+#   Actions: read, write, delete, export
+#   Scopes: all, department, assigned, financial
+
+roles:
+  admin:
+    description: "Full access to all data and operations"
+    permissions:
+      - "read:all"
+      - "write:all"
+      - "delete:all"
+      - "export:all"
+    data_scope: "all"
+    sensitive_data: true
+    
+  manager:
+    description: "Department-level access"
+    permissions:
+      - "read:department"
+      - "write:department"
+      - "export:reports"
+    data_scope: "department"
+    sensitive_data: false
+    
+  analyst:
+    description: "Read-only access to assigned data"
+    permissions:
+      - "read:assigned"
+      - "export:reports"
+    data_scope: "assigned"
+    sensitive_data: false
+    
+  bookkeeper:
+    description: "Accounting data access"
+    permissions:
+      - "read:financial"
+      - "write:transactions"
+      - "export:financial_reports"
+    data_scope: "financial"
+    sensitive_data: false
+    
+  auditor:
+    description: "Read-only access for compliance review"
+    permissions:
+      - "read:all"
+      - "export:audit_reports"
+    data_scope: "all"
+    sensitive_data: true
+
+# =============================================================================
+# DATA CLASSIFICATION
+# =============================================================================
+# Define sensitivity levels for different types of data
+
+data_classification:
+  public:
+    description: "Non-sensitive business data"
+    requires_approval: false
+    log_access: true
+    examples:
+      - "product_name"
+      - "company_name"
+      - "public_address"
+    
+  internal:
+    description: "Internal business data"
+    requires_approval: false
+    log_access: true
+    allowed_roles: ["admin", "manager", "analyst", "bookkeeper", "auditor"]
+    examples:
+      - "invoice_number"
+      - "customer_name"
+      - "order_total"
+      - "vendor_name"
+      
+  confidential:
+    description: "Sensitive business data"
+    requires_approval: true
+    log_access: true
+    allowed_roles: ["admin", "manager", "auditor"]
+    examples:
+      - "salary"
+      - "compensation"
+      - "performance_review"
+      - "disciplinary"
+      - "contract_value"
+      - "profit_margin"
+      
+  restricted:
+    description: "Highly sensitive data - PII/Financial"
+    requires_approval: true
+    requires_justification: true
+    log_access: true
+    alert_on_access: true
+    allowed_roles: ["admin"]
+    examples:
+      - "ssn"
+      - "sin"
+      - "social_security"
+      - "bank_account"
+      - "credit_card"
+      - "routing_number"
+      - "password"
+      - "medical"
+      - "health_record"
+
+# =============================================================================
+# BLOCKED OPERATIONS
+# =============================================================================
+# Operations that are NEVER allowed, regardless of user role
+
+blocked_operations:
+  # SQL commands that modify data
+  sql:
+    - "DROP"
+    - "DELETE"
+    - "TRUNCATE"
+    - "ALTER"
+    - "CREATE"
+    - "INSERT"
+    - "UPDATE"
+    - "GRANT"
+    - "REVOKE"
+  
+  # Patterns to block
+  patterns:
+    - "SELECT * FROM users"          # Too broad - user table
+    - "SELECT * FROM employees"      # Too broad - employee table
+    - "password"                     # Never query passwords
+    - "credit_card_number"           # Never query full CC numbers
+    - "ssn"                          # Social Security Number
+    - "sin"                          # Social Insurance Number
+    
+  # System/File operations
+  file_operations:
+    - "rm -rf"
+    - "format"
+    - "delete all"
+    - "drop database"
+
+# =============================================================================
+# QUERY LIMITS
+# =============================================================================
+# Prevent excessive data access
+
+query_limits:
+  max_rows: 10000                    # Maximum rows per query
+  max_date_range_days: 365           # Maximum date range (1 year)
+  require_date_filter: true          # Require date filter on financial queries
+  require_specific_columns: true     # Block SELECT * queries
+  max_queries_per_hour: 100          # Rate limit per user
+
+# =============================================================================
+# PII FIELD HANDLING
+# =============================================================================
+# How to handle personally identifiable information
+
+pii_fields:
+  # These fields are ALWAYS blocked
+  must_block:
+    - "ssn"
+    - "sin"
+    - "social_security_number"
+    - "credit_card_number"
+    - "cvv"
+    - "password"
+    - "password_hash"
+    - "secret_key"
+    - "api_key"
+  
+  # These fields are masked in output (show last 4 digits only)
+  must_mask:
+    - "bank_account"
+    - "routing_number"
+    - "credit_card"  # Last 4 only
+    - "phone"        # Last 4 only
+  
+  # These fields are anonymized (replaced with ID)
+  must_anonymize:
+    - "email"
+    - "home_address"
+    - "date_of_birth"
+    
+  # These require justification before access
+  requires_justification:
+    - "salary"
+    - "compensation"
+    - "bonus"
+    - "commission"
+    - "medical_info"
+    - "disciplinary_record"
+
+# =============================================================================
+# AUDIT SETTINGS
+# =============================================================================
+
+audit_settings:
+  log_all_queries: true
+  log_failed_attempts: true
+  retention_days: 2555               # 7 years (regulatory requirement)
+  
+  # Alerts
+  alert_on_blocked: true
+  alert_on_sensitive_access: true
+  alert_email: "compliance@yourcompany.com"
+  alert_slack_webhook: ""            # Optional: Slack webhook URL
+  
+  # Audit receipt contents
+  require_audit_receipt: true
+  receipt_includes:
+    - "timestamp"
+    - "user_id"
+    - "user_role"
+    - "query_text"
+    - "data_accessed"
+    - "row_count"
+    - "ip_address"
+    - "approval_status"
+    - "approver_id"
+
+# =============================================================================
+# ACCESS SCHEDULE (Optional)
+# =============================================================================
+# Restrict access to business hours only
+
+access_schedule:
+  enabled: false                     # Set to true to enforce
+  allowed_hours:
+    start: "06:00"
+    end: "22:00"
+  timezone: "America/Toronto"
+  allowed_days:
+    - "Monday"
+    - "Tuesday"
+    - "Wednesday"
+    - "Thursday"
+    - "Friday"
+  alert_outside_hours: true
+  block_outside_hours: false         # Warning only, or hard block?
+
+# =============================================================================
+# REGULATORY COMPLIANCE
+# =============================================================================
+# Enable frameworks relevant to your business
+
+compliance_frameworks:
+  # Canadian Privacy Law
+  pipeda:
+    enabled: true
+    requires_consent_log: true
+    data_minimization: true
+    breach_notification: true
+    
+  # California Privacy Law
+  ccpa:
+    enabled: true
+    honor_deletion_requests: true
+    do_not_sell: true
+    
+  # US Financial Compliance
+  sox:
+    enabled: false
+    segregation_of_duties: true
+    change_management: true
+    
+  # European Privacy Law
+  gdpr:
+    enabled: false
+    right_to_be_forgotten: true
+    data_portability: true
+    consent_management: true
+    
+  # Healthcare (if applicable)
+  hipaa:
+    enabled: false
+    minimum_necessary: true
+    access_controls: true
+    audit_controls: true
+
+# =============================================================================
+# CUSTOM RULES
+# =============================================================================
+# Add your own company-specific rules
+
+custom_rules:
+  # Example: Require approval for queries about specific customers
+  - name: "VIP Customer Protection"
+    description: "Require approval for VIP customer data"
+    trigger:
+      field: "customer_tier"
+      value: "VIP"
+    action: "requires_approval"
+    
+  # Example: Block access to competitor analysis
+  - name: "Competitive Intelligence"
+    description: "Block unauthorized access to competitor data"
+    trigger:
+      table: "competitor_analysis"
+    action: "blocked"
+    allowed_roles: ["admin", "manager"]
+    
+  # Example: Notify finance team on large transaction queries
+  - name: "Large Transaction Alert"
+    description: "Alert on queries for transactions over $100,000"
+    trigger:
+      field: "amount"
+      operator: ">"
+      value: 100000
+    action: "notify"
+    notify_email: "finance@yourcompany.com"
+
+# =============================================================================
+# APPROVAL WORKFLOW
+# =============================================================================
+
+approval_workflow:
+  enabled: true
+  
+  # Who can approve what
+  approval_chain:
+    confidential:
+      approvers: ["manager", "admin"]
+      timeout_hours: 24
+      
+    restricted:
+      approvers: ["admin"]
+      timeout_hours: 4
+      require_justification: true
+      
+  # Auto-expire pending approvals
+  auto_expire_hours: 48
+  
+  # Notification settings
+  notify_on_pending: true
+  notify_on_expired: true
+  reminder_after_hours: 12

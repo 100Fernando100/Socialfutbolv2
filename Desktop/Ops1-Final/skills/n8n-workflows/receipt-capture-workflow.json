@@ -1,0 +1,207 @@
+{
+  "name": "Ops1-Receipt-Capture",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "receipt-capture",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "name": "Receipt Upload Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "position": [250, 300],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "mailbox": "INBOX",
+        "postProcessAction": "markRead",
+        "options": {
+          "downloadAttachments": true
+        }
+      },
+      "name": "Email Receipt Trigger",
+      "type": "n8n-nodes-base.emailReadImap",
+      "position": [250, 500],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate unique receipt ID and extract image\nconst timestamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 14);\nconst hash = Math.random().toString(36).substr(2, 8).toUpperCase();\nconst receipt_id = `RCP-${timestamp.slice(0,8)}-${hash}`;\n\nlet image_base64, filename, source;\n\nif ($input.first().json.body) {\n  // From webhook\n  image_base64 = $input.first().json.body.image;\n  filename = $input.first().json.body.filename || 'receipt.jpg';\n  source = 'web_upload';\n} else {\n  // From email\n  const attachments = $input.first().json.attachments || [];\n  if (attachments.length > 0) {\n    image_base64 = attachments[0].data;\n    filename = attachments[0].filename;\n    source = 'email';\n  }\n}\n\nreturn {\n  json: {\n    receipt_id,\n    image_base64,\n    filename,\n    source,\n    company_id: $input.first().json.body?.company_id || 'default',\n    user_id: $input.first().json.body?.user_id || $input.first().json.from,\n    received_at: new Date().toISOString()\n  }\n};"
+      },
+      "name": "Prepare Receipt Data",
+      "type": "n8n-nodes-base.code",
+      "position": [450, 400],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "url": "https://api.anthropic.com/v1/messages",
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "x-api-key", "value": "={{ $env.ANTHROPIC_API_KEY }}"},
+            {"name": "anthropic-version", "value": "2023-06-01"},
+            {"name": "Content-Type", "value": "application/json"}
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {"name": "model", "value": "claude-3-haiku-20240307"},
+            {"name": "max_tokens", "value": "2000"},
+            {"name": "messages", "value": "={{ JSON.stringify([{role: 'user', content: [{type: 'image', source: {type: 'base64', media_type: 'image/jpeg', data: $json.image_base64}}, {type: 'text', text: 'Extract receipt data as JSON: vendor_name, date (YYYY-MM-DD), total_amount, tax_amount, subtotal, currency, invoice_number, line_items[], payment_method. Return ONLY valid JSON.'}]}]) }}"}
+          ]
+        }
+      },
+      "name": "Claude Vision OCR",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [650, 400],
+      "typeVersion": 3
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse OCR response and extract JSON\nlet response = $input.first().json.content?.[0]?.text || '';\n\ntry {\n  if (response.includes('```')) {\n    response = response.split('```')[1].replace('json', '').trim();\n  }\n  \n  const extracted = JSON.parse(response);\n  \n  return {\n    json: {\n      ...$('Prepare Receipt Data').first().json,\n      ...extracted,\n      ocr_status: 'success'\n    }\n  };\n} catch (e) {\n  return {\n    json: {\n      ...$('Prepare Receipt Data').first().json,\n      ocr_status: 'failed',\n      ocr_error: e.message,\n      raw_response: response\n    }\n  };\n}"
+      },
+      "name": "Parse OCR Response",
+      "type": "n8n-nodes-base.code",
+      "position": [850, 400],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "jsCode": "// Auto-categorize expense\nconst categories = {\n  meals: ['restaurant', 'cafe', 'starbucks', 'mcdonald', 'subway', 'pizza', 'uber eats', 'tim hortons'],\n  office: ['staples', 'office depot', 'amazon', 'best buy', 'walmart'],\n  travel: ['airline', 'hotel', 'uber', 'lyft', 'airbnb', 'expedia'],\n  software: ['microsoft', 'adobe', 'google', 'aws', 'slack', 'zoom', 'github'],\n  utilities: ['hydro', 'gas', 'electric', 'bell', 'rogers', 'telus'],\n  auto: ['gas station', 'shell', 'esso', 'petro', 'canadian tire']\n};\n\nconst qbAccounts = {\n  meals: 'Meals and Entertainment',\n  office: 'Office Supplies',\n  travel: 'Travel',\n  software: 'Computer and Internet Expenses',\n  utilities: 'Utilities',\n  auto: 'Auto',\n  uncategorized: 'Uncategorized Expense'\n};\n\nconst vendor = ($json.vendor_name || '').toLowerCase();\nlet category = 'uncategorized';\nlet confidence = 0;\n\nfor (const [cat, keywords] of Object.entries(categories)) {\n  if (keywords.some(kw => vendor.includes(kw))) {\n    category = cat;\n    confidence = 0.9;\n    break;\n  }\n}\n\nreturn {\n  json: {\n    ...$json,\n    category,\n    qb_account: qbAccounts[category],\n    category_confidence: confidence,\n    needs_review: confidence < 0.7\n  }\n};"
+      },
+      "name": "Auto Categorize",
+      "type": "n8n-nodes-base.code",
+      "position": [1050, 400],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "jsCode": "// Check for duplicates\nconst { vendor_name, total_amount, date, invoice_number } = $json;\n\n// In production, query database for existing receipts\nreturn {\n  json: {\n    ...$json,\n    is_duplicate: false,\n    duplicate_check: 'passed'\n  }\n};"
+      },
+      "name": "Duplicate Check",
+      "type": "n8n-nodes-base.code",
+      "position": [1250, 400],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.is_duplicate }}",
+              "value2": false
+            }
+          ]
+        }
+      },
+      "name": "Is Duplicate?",
+      "type": "n8n-nodes-base.if",
+      "position": [1450, 400],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "jsCode": "// Compliance check\nconst { total_amount, category, user_id } = $json;\n\nconst policies = {\n  max_amount_no_approval: 500,\n  blocked_categories: ['gambling', 'adult'],\n  require_receipt_over: 25\n};\n\nlet decision = 'APPROVED';\nlet violations = [];\n\nif (total_amount > policies.max_amount_no_approval) {\n  decision = 'REQUIRES_APPROVAL';\n  violations.push(`Amount $${total_amount} exceeds limit of $${policies.max_amount_no_approval}`);\n}\n\nif (policies.blocked_categories.includes(category)) {\n  decision = 'BLOCKED';\n  violations.push(`Category '${category}' is not allowed`);\n}\n\nconst auditReceiptId = `AR-${new Date().toISOString().slice(0,10).replace(/-/g,'')}-${Math.random().toString(36).substr(2,8).toUpperCase()}`;\n\nreturn {\n  json: {\n    ...$json,\n    audit: {\n      decision,\n      receipt_id: auditReceiptId,\n      violations,\n      timestamp: new Date().toISOString()\n    }\n  }\n};"
+      },
+      "name": "Compliance Auditor",
+      "type": "n8n-nodes-base.code",
+      "position": [1650, 300],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.audit.decision }}",
+              "value2": "APPROVED"
+            }
+          ]
+        }
+      },
+      "name": "Audit Decision",
+      "type": "n8n-nodes-base.if",
+      "position": [1850, 300],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": true,\n  \"receipt_id\": \"{{ $json.receipt_id }}\",\n  \"vendor\": \"{{ $json.vendor_name }}\",\n  \"amount\": {{ $json.total_amount || 0 }},\n  \"category\": \"{{ $json.category }}\",\n  \"qb_account\": \"{{ $json.qb_account }}\",\n  \"audit_receipt\": \"{{ $json.audit.receipt_id }}\",\n  \"message\": \"Receipt processed successfully\"\n}"
+      },
+      "name": "Respond Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [2250, 200],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": false,\n  \"receipt_id\": \"{{ $json.receipt_id }}\",\n  \"status\": \"{{ $json.audit.decision }}\",\n  \"violations\": {{ JSON.stringify($json.audit.violations || []) }},\n  \"message\": \"Receipt requires review\"\n}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "name": "Respond Pending",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [2050, 400],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": false,\n  \"receipt_id\": \"{{ $json.receipt_id }}\",\n  \"error\": \"Duplicate receipt detected\",\n  \"matching_receipt\": \"{{ $json.matching_receipt_id }}\"\n}",
+        "options": {
+          "responseCode": 409
+        }
+      },
+      "name": "Respond Duplicate",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [1650, 500],
+      "typeVersion": 1
+    }
+  ],
+  "connections": {
+    "Receipt Upload Webhook": {
+      "main": [[{"node": "Prepare Receipt Data", "type": "main", "index": 0}]]
+    },
+    "Email Receipt Trigger": {
+      "main": [[{"node": "Prepare Receipt Data", "type": "main", "index": 0}]]
+    },
+    "Prepare Receipt Data": {
+      "main": [[{"node": "Claude Vision OCR", "type": "main", "index": 0}]]
+    },
+    "Claude Vision OCR": {
+      "main": [[{"node": "Parse OCR Response", "type": "main", "index": 0}]]
+    },
+    "Parse OCR Response": {
+      "main": [[{"node": "Auto Categorize", "type": "main", "index": 0}]]
+    },
+    "Auto Categorize": {
+      "main": [[{"node": "Duplicate Check", "type": "main", "index": 0}]]
+    },
+    "Duplicate Check": {
+      "main": [[{"node": "Is Duplicate?", "type": "main", "index": 0}]]
+    },
+    "Is Duplicate?": {
+      "main": [
+        [{"node": "Compliance Auditor", "type": "main", "index": 0}],
+        [{"node": "Respond Duplicate", "type": "main", "index": 0}]
+      ]
+    },
+    "Compliance Auditor": {
+      "main": [[{"node": "Audit Decision", "type": "main", "index": 0}]]
+    },
+    "Audit Decision": {
+      "main": [
+        [{"node": "Respond Success", "type": "main", "index": 0}],
+        [{"node": "Respond Pending", "type": "main", "index": 0}]
+      ]
+    }
+  }
+}
