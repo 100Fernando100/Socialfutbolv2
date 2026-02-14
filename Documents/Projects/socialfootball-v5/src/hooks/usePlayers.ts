@@ -29,16 +29,7 @@ export function usePlayers(options: UsePlayersOptions = {}) {
 
         let query = supabase
           .from('players')
-          .select(`
-            id,
-            name,
-            team_id,
-            position,
-            number,
-            photo,
-            api_sports_id,
-            team:teams(name)
-          `)
+          .select('*')
           .order('number', { ascending: true });
 
         if (options.team_id) {
@@ -53,7 +44,7 @@ export function usePlayers(options: UsePlayersOptions = {}) {
           id: player.id,
           name: player.name,
           team_id: player.team_id,
-          team_name: player.team?.name || 'Unknown',
+          team_name: '',
           position: player.position,
           number: player.number,
           photo: player.photo,

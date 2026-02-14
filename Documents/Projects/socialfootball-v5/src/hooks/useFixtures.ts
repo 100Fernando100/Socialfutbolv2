@@ -37,21 +37,7 @@ export function useFixtures(options: UseFixturesOptions = {}) {
 
         let query = supabase
           .from('fixtures')
-          .select(`
-            id,
-            home_team_id,
-            away_team_id,
-            fixture_date,
-            status_short,
-            status_long,
-            score_home,
-            score_away,
-            league_id,
-            venue,
-            home_team:teams!fixtures_home_team_id_fkey(name, logo),
-            away_team:teams!fixtures_away_team_id_fkey(name, logo),
-            league:leagues(name)
-          `)
+          .select('*')
           .order('fixture_date', { ascending: true });
 
         // Filter by status
@@ -75,18 +61,18 @@ export function useFixtures(options: UseFixturesOptions = {}) {
           id: fixture.id,
           home_team_id: fixture.home_team_id,
           away_team_id: fixture.away_team_id,
-          home_team_name: fixture.home_team?.name || 'Unknown',
-          away_team_name: fixture.away_team?.name || 'Unknown',
-          home_team_logo: fixture.home_team?.logo || '',
-          away_team_logo: fixture.away_team?.logo || '',
+          home_team_name: fixture.home_team_name || 'Unknown',
+          away_team_name: fixture.away_team_name || 'Unknown',
+          home_team_logo: fixture.home_team_logo || '',
+          away_team_logo: fixture.away_team_logo || '',
           fixture_date: fixture.fixture_date,
           status_short: fixture.status_short,
           status_long: fixture.status_long,
-          score_home: fixture.score_home,
-          score_away: fixture.score_away,
+          score_home: fixture.home_goals,
+          score_away: fixture.away_goals,
           league_id: fixture.league_id,
-          league_name: fixture.league?.name || '',
-          venue: fixture.venue,
+          league_name: '',
+          venue: fixture.venue_name,
         }));
 
         setFixtures(formattedFixtures);

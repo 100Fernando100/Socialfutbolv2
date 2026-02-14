@@ -35,21 +35,7 @@ export function useStandings(options: UseStandingsOptions = {}) {
 
         let query = supabase
           .from('standings')
-          .select(`
-            id,
-            team_id,
-            league_id,
-            rank,
-            points,
-            played,
-            won,
-            drawn,
-            lost,
-            goals_for,
-            goals_against,
-            goal_difference,
-            team:teams(name, logo)
-          `)
+          .select('*')
           .order('rank', { ascending: true });
 
         if (options.league_id) {
@@ -63,8 +49,8 @@ export function useStandings(options: UseStandingsOptions = {}) {
         const formattedStandings = (data || []).map((standing: any) => ({
           id: standing.id,
           team_id: standing.team_id,
-          team_name: standing.team?.name || 'Unknown',
-          team_logo: standing.team?.logo || '',
+          team_name: '',
+          team_logo: '',
           league_id: standing.league_id,
           rank: standing.rank,
           points: standing.points,
